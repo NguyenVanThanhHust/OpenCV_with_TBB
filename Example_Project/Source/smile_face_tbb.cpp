@@ -5,8 +5,12 @@
 #include "opencv2/highgui.hpp"
 #include "opencv2/imgproc.hpp"
 #include <iostream>
+#include <vector>
+#include <string>
+#include <chrono>
 
 using namespace std;
+using namespace std::chrono;
 
 // TBB NOTE: we need these headers
 #include <thread>
@@ -20,11 +24,17 @@ struct ProcessingChainData
 	vector<cv::Rect> faces, faces2;
 	cv::Mat gray, smallImg;
 };
+
+struct time_step
+{
+	string filter;
+	string execution_time;
+};
 void detectAndDrawTBB(cv::VideoCapture &capture,
 	tbb::concurrent_bounded_queue<ProcessingChainData *> &guiQueue,
 	cv::CascadeClassifier& cascade,
 	cv::CascadeClassifier& nestedCascade,
-	double scale, bool tryflip);
+	double scale, bool tryflip, vector<time_step>& time_process);
 
 string cascadeName;
 string nestedCascadeName;
@@ -45,10 +55,10 @@ int main()
 	cascade.load(cascadeName);
 	nestedCascade.load(nestedCascadeName);
 	tryflip = false;
-	inputName = "test.mp4";
+	inputName = "short_test.mp4";
 	scale = 2;
 	capture.open(inputName);
-
+	vector<time_step> time_process;
 	int64 startTime;
 	if (capture.isOpened())
 	{
@@ -57,7 +67,7 @@ int main()
 
 		tbb::concurrent_bounded_queue<ProcessingChainData *> guiQueue;
 		guiQueue.set_capacity(2); // TBB NOTE: flow control so the pipeline won't fill too much RAM
-		std::thread pipelineRunner = thread(detectAndDrawTBB, ref(capture), ref(guiQueue), ref(cascade), ref(nestedCascade), scale, tryflip);
+		std::thread pipelineRunner = thread(detectAndDrawTBB, ref(capture), ref(guiQueue), ref(cascade), ref(nestedCascade), scale, tryflip, ref(time_process));
 
 		startTime = cv::getTickCount();
 
@@ -79,6 +89,10 @@ int main()
 		}
 		double tfreq = cv::getTickFrequency();
 		double secs = ((double)cv::getTickCount() - startTime) / tfreq;
+		for (vector<time_step>::iterator it = time_process.begin(); it < time_process.end(); it++)
+		{
+			cout << "Filter: " << it->filter << " executed in :" << it->execution_time << endl;
+		}
 		cout << "Execution took " << fixed << secs << " seconds." << endl;
 		// TBB NOTE: flush the queue after marking 'done'
 		do
@@ -96,15 +110,11 @@ int main()
 	return 0;
 }
 
-// TBB NOTE: This usage below is just for the tbb demonstration.
-//           It is not an example for good OO code. The lambda
-//           expressions are used to easily show the correleation
-//           between the original code and the tbb code.
 void detectAndDrawTBB(cv::VideoCapture &capture,
 	tbb::concurrent_bounded_queue<ProcessingChainData *> &guiQueue,
 	cv::CascadeClassifier& cascade,
 	cv::CascadeClassifier& nestedCascade,
-	double scale, bool tryflip)
+	double scale, bool tryflip, vector<time_step>& time_process)
 {
 	const static cv::Scalar colors[] =
 	{
@@ -124,6 +134,7 @@ void detectAndDrawTBB(cv::VideoCapture &capture,
 		tbb::make_filter<void, ProcessingChainData*>(tbb::filter::serial_in_order,
 			[&](tbb::flow_control& fc)->ProcessingChainData*
 	{   // TBB NOTE: this filter feeds input into the pipeline
+		high_resolution_clock::time_point t1 = high_resolution_clock::now();
 		cv::Mat frame;
 		capture >> frame;
 		if (done || frame.empty())
@@ -139,6 +150,13 @@ void detectAndDrawTBB(cv::VideoCapture &capture,
 		}
 		auto pData = new ProcessingChainData;
 		pData->img = frame.clone();
+		high_resolution_clock::time_point t2 = high_resolution_clock::now();
+		auto duration = duration_cast<microseconds>(t2 - t1).count();
+		string duration_result = to_string(duration);
+		time_step ts;
+		ts.filter = "1st";
+		ts.execution_time = duration_result;
+		time_process.push_back(ts);
 		return pData;
 	}
 			)&
@@ -146,7 +164,15 @@ void detectAndDrawTBB(cv::VideoCapture &capture,
 		tbb::make_filter<ProcessingChainData*, ProcessingChainData*>(tbb::filter::serial_in_order,
 			[&](ProcessingChainData *pData)->ProcessingChainData*
 	{
+		high_resolution_clock::time_point t1 = high_resolution_clock::now();
 		cvtColor(pData->img, pData->gray, cv::COLOR_BGR2GRAY);
+		high_resolution_clock::time_point t2 = high_resolution_clock::now();
+		auto duration = duration_cast<microseconds>(t2 - t1).count();
+		string duration_result = to_string(duration);
+		time_step ts;
+		ts.filter = "2nd";
+		ts.execution_time = duration_result;
+		time_process.push_back(ts);
 		return pData;
 	}
 			)&
@@ -154,8 +180,16 @@ void detectAndDrawTBB(cv::VideoCapture &capture,
 		tbb::make_filter<ProcessingChainData*, ProcessingChainData*>(tbb::filter::serial_in_order,
 			[&](ProcessingChainData *pData)->ProcessingChainData*
 	{
+		high_resolution_clock::time_point t1 = high_resolution_clock::now();
 		double fx = 1 / scale;
 		resize(pData->gray, pData->smallImg, cv::Size(), fx, fx, cv::INTER_LINEAR);
+		high_resolution_clock::time_point t2 = high_resolution_clock::now();
+		auto duration = duration_cast<microseconds>(t2 - t1).count();
+		string duration_result = to_string(duration);
+		time_step ts;
+		ts.filter = "3rd";
+		ts.execution_time = duration_result;
+		time_process.push_back(ts);
 		return pData;
 	}
 			)&
@@ -163,7 +197,15 @@ void detectAndDrawTBB(cv::VideoCapture &capture,
 		tbb::make_filter<ProcessingChainData*, ProcessingChainData*>(tbb::filter::serial_in_order,
 			[&](ProcessingChainData *pData)->ProcessingChainData*
 	{
+		high_resolution_clock::time_point t1 = high_resolution_clock::now();
 		equalizeHist(pData->smallImg, pData->smallImg);
+		high_resolution_clock::time_point t2 = high_resolution_clock::now();
+		auto duration = duration_cast<microseconds>(t2 - t1).count();
+		string duration_result = to_string(duration);
+		time_step ts;
+		ts.filter = "4th";
+		ts.execution_time = duration_result;
+		time_process.push_back(ts);
 		return pData;
 	}
 			)&
@@ -171,6 +213,7 @@ void detectAndDrawTBB(cv::VideoCapture &capture,
 		tbb::make_filter<ProcessingChainData*, ProcessingChainData*>(tbb::filter::serial_in_order,
 			[&](ProcessingChainData *pData)->ProcessingChainData*
 	{
+		high_resolution_clock::time_point t1 = high_resolution_clock::now();
 		cascade.detectMultiScale(pData->smallImg, pData->faces,
 			1.1, 2, 0
 			//|CASCADE_FIND_BIGGEST_OBJECT
@@ -192,6 +235,13 @@ void detectAndDrawTBB(cv::VideoCapture &capture,
 				pData->faces.push_back(cv::Rect(pData->smallImg.cols - r->x - r->width, r->y, r->width, r->height));
 			}
 		}
+		high_resolution_clock::time_point t2 = high_resolution_clock::now();
+		auto duration = duration_cast<microseconds>(t2 - t1).count();
+		string duration_result = to_string(duration);
+		time_step ts;
+		ts.filter = "5th";
+		ts.execution_time = duration_result;
+		time_process.push_back(ts);
 		return pData;
 	}
 			)&
@@ -199,6 +249,7 @@ void detectAndDrawTBB(cv::VideoCapture &capture,
 		tbb::make_filter<ProcessingChainData*, ProcessingChainData*>(tbb::filter::serial_in_order,
 			[&](ProcessingChainData *pData)->ProcessingChainData*
 	{
+		high_resolution_clock::time_point t1 = high_resolution_clock::now();
 		for (size_t i = 0; i < pData->faces.size(); i++)
 		{
 			cv::Rect r = pData->faces[i];
@@ -248,6 +299,13 @@ void detectAndDrawTBB(cv::VideoCapture &capture,
 			cv::Scalar col = cv::Scalar((float)255 * intensityZeroOne, 0, 0);
 			rectangle(pData->img, cvPoint(0, pData->img.rows), cvPoint(pData->img.cols / 10, pData->img.rows - rect_height), col, -1);
 		}
+		high_resolution_clock::time_point t2 = high_resolution_clock::now();
+		auto duration = duration_cast<microseconds>(t2 - t1).count();
+		string duration_result = to_string(duration);
+		time_step ts;
+		ts.filter = "6th";
+		ts.execution_time = duration_result;
+		time_process.push_back(ts);
 		return pData;
 	}
 			)&
@@ -255,6 +313,7 @@ void detectAndDrawTBB(cv::VideoCapture &capture,
 		tbb::make_filter<ProcessingChainData*, void>(tbb::filter::serial_in_order,
 			[&](ProcessingChainData *pData)
 	{   // TBB NOTE: pipeline end point. dispatch to GUI
+		high_resolution_clock::time_point t1 = high_resolution_clock::now();
 		if (!done)
 		{
 			try
@@ -267,8 +326,14 @@ void detectAndDrawTBB(cv::VideoCapture &capture,
 				done = true;
 			}
 		}
+		high_resolution_clock::time_point t2 = high_resolution_clock::now();
+		auto duration = duration_cast<microseconds>(t2 - t1).count();
+		string duration_result = to_string(duration);
+		time_step ts;
+		ts.filter = "7th";
+		ts.execution_time = duration_result;
+		time_process.push_back(ts);
 	}
 			)
 		);
-
 }
